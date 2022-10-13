@@ -12,19 +12,21 @@ Understood `options` are:
 * `-p path1,path2`: a comma separated list of excluded prefixes, like
   `/usr`. All symbols defined or used in files whose name starts with of those
   will be hidden in the callgraph.
+* `--attribute`: a comma separated list of attributes to search
+* `--edit`: opens `vim` when function doesn't contain specific attribute
 
 The easiest way to generate the file compile\_commands.json for any make based
 compilation chain is to use [Bear](https://github.com/rizsotto/Bear) and recompile
-with `bear make`.
+with `bear -- make`.
 
 When running the python script, after parsing all the codebase, you are
-prompted to type in the function's name for which you wan to obtain the
-callgraph
+prompted to type in the function's name for which you want to obtain the
+callgraph.
 
 # Example
 
 ```
-$ bear make
+$ bear -- make
 <output omitted>
 $ clang-callgraph.py compile_commands.json -p /usr/lib/llvm-3.8/lib/clang/3.8.0/include/
 reading source files...
