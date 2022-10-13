@@ -5,19 +5,12 @@ from clang.cindex import CursorKind, Index, CompilationDatabase
 from collections import defaultdict
 import sys
 import json
-"""
-Dumps a callgraph of a function in a codebase
-usage: callgraph.py file.cpp|compile_commands.json [-x exclude-list] [extra clang args...]
-The easiest way to generate the file compile_commands.json for any make based
-compilation chain is to use Bear and recompile with `bear make`.
-
-When running the python script, after parsing all the codebase, you are
-prompted to type in the function's name for which you wan to obtain the
-callgraph
-"""
+import os
+from termcolor import colored
 
 CALLGRAPH = defaultdict(list)
 FULLNAMES = defaultdict(set)
+DISPLAYED=[]
 
 
 def get_diag_info(diag):
@@ -79,13 +72,13 @@ def show_info(node, xfiles, xprefs, cur_fun=None):
                 fully_qualified_pretty(cur_fun))
 
     if node.kind == CursorKind.CXX_METHOD or \
-            node.kind == CursorKind.FUNCTION_DECL:
+            node.kind == CursorKind.FUNCTION_DECL or node.kind == CursorKind.CONSTRUCTOR:
         if not is_excluded(node, xfiles, xprefs):
             cur_fun = node
             FULLNAMES[fully_qualified(cur_fun)].add(
                 fully_qualified_pretty(cur_fun))
 
-    if node.kind == CursorKind.CALL_EXPR:
+    if node.kind == CursorKind.CALL_EXPR or node.kind == CursorKind.CONSTRUCTOR or node.kind == CursorKind.DESTRUCTOR:
         if node.referenced and not is_excluded(node.referenced, xfiles, xprefs):
             CALLGRAPH[fully_qualified_pretty(cur_fun)].append(node.referenced)
 
@@ -93,29 +86,44 @@ def show_info(node, xfiles, xprefs, cur_fun=None):
         show_info(c, xfiles, xprefs, cur_fun)
 
 
+def get_annotations(node):
+    return [c.displayname for c in node.get_children()
+            if c.kind == CursorKind.ANNOTATE_ATTR]
+
 def pretty_print(n):
     v = ''
     if n.is_virtual_method():
         v = ' virtual'
     if n.is_pure_virtual_method():
         v = ' = 0'
-    return fully_qualified_pretty(n) + v
+    return fully_qualified_pretty(n) + v + ' ' + ' '.join(get_annotations(n))
 
 
-def print_calls(fun_name, so_far, depth=0):
-    if depth >= 15:
-        print('...<too deep>...')
-        return
+def print_calls(fun_name, so_far, depth=0, edit=False, attributes=[]):
     if fun_name in CALLGRAPH:
         for f in CALLGRAPH[fun_name]:
-            print('  ' * (depth + 1) + pretty_print(f))
+            name = pretty_print(f)
+            if name not in DISPLAYED and f.kind is not CursorKind.CONSTRUCTOR and not f.is_pure_virtual_method():
+                DISPLAYED.append(name)
+                printed = False
+                for a in attributes:
+                    if a in name:
+                        print(colored('  ' * (depth + 1) + name, 'green') + ' ' + str(f.location.file) + ':' + str(f.location.line))
+                        printed = True
+                        break
+                if not printed:
+                    print('  ' * (depth + 1) + name + ' ' + str(f.location.file) + ':' + str(f.location.line))
+                    if edit:
+                        e = os.system(f"vim +{f.location.line} {f.location.file}")
+                        if e:
+                            edit=False
             if f in so_far:
                 continue
             so_far.append(f)
             if fully_qualified_pretty(f) in CALLGRAPH:
-                print_calls(fully_qualified_pretty(f), so_far, depth + 1)
+                print_calls(fully_qualified_pretty(f), so_far, depth + 1, edit, attributes)
             else:
-                print_calls(fully_qualified(f), so_far, depth + 1)
+                print_calls(fully_qualified(f), so_far, depth + 1, edit, attributes)
 
 
 def read_compile_commands(filename):
@@ -131,6 +139,8 @@ def read_args(args):
     clang_args = []
     excluded_prefixes = []
     excluded_paths = ['/usr']
+    search_attributes = []
+    edit = False
     i = 0
     while i < len(args):
         if args[i] == '-x':
@@ -139,6 +149,11 @@ def read_args(args):
         elif args[i] == '-p':
             i += 1
             excluded_paths = args[i].split(',')
+        elif args[i] == '--edit':
+            edit = True
+        elif args[i] == '--attribute':
+            i += 1
+            search_attributes = args[i].split(',')
         elif args[i][0] == '-':
             clang_args.append(args[i])
         else:
@@ -148,7 +163,9 @@ def read_args(args):
         'db': db,
         'clang_args': clang_args,
         'excluded_prefixes': excluded_prefixes,
-        'excluded_paths': excluded_paths
+        'excluded_paths': excluded_paths,
+        'edit': edit,
+        'search_attributes': search_attributes
     }
 
 
@@ -161,13 +178,15 @@ def main():
     cfg = read_args(sys.argv)
 
     print('reading source files...')
+    files_read = []
     for cmd in read_compile_commands(cfg['db']):
         index = Index.create()
-        c = [
-            x for x in cmd['command'].split()
-            if x.startswith('-I') or x.startswith('-std=') or x.startswith('-D')
-        ] + cfg['clang_args']
+        c = cfg['clang_args']
         tu = index.parse(cmd['file'], c)
+        if cmd['file'] not in files_read:
+            files_read.append(cmd['file'])
+        else:
+            continue
         print(cmd['file'])
         if not tu:
             parser.error("unable to load input")
@@ -180,12 +199,14 @@ def main():
         show_info(tu.cursor, cfg['excluded_paths'], cfg['excluded_prefixes'])
 
     while True:
+        global DISPLAYED
+        DISPLAYED = []
         fun = input('> ')
         if not fun:
             break
         if fun in CALLGRAPH:
             print(fun)
-            print_calls(fun, list())
+            print_calls(fun, list(), edit=cfg['edit'], attributes=cfg['search_attributes'])
         else:
             print('matching:')
             for f, ff in FULLNAMES.items():
